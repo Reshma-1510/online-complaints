@@ -1,0 +1,773 @@
+import React, { useState, useEffect } from 'react';
+import { initializeApp } from 'firebase/app';
+import {
+  getAuth,
+  signInAnonymously,
+  signInWithCustomToken,
+  onAuthStateChanged,
+} from 'firebase/auth';
+import {
+  getFirestore,
+  doc,
+  getDoc,
+  addDoc,
+  setDoc,
+  updateDoc,
+  deleteDoc,
+  onSnapshot,
+  collection,
+  query,
+  where,
+  getDocs,
+  serverTimestamp,
+} from 'firebase/firestore';
+
+// Main App Component
+export default function App() {
+  const [firebaseApp, setFirebaseApp] = useState(null);
+  const [db, setDb] = useState(null);
+  const [auth, setAuth] = useState(null);
+  const [userId, setUserId] = useState(null);
+  const [isAuthReady, setIsAuthReady] = useState(false);
+  const [error, setError] = useState(null);
+
+  // Initialize Firebase and set up authentication listener
+  useEffect(() => {
+    try {
+      // MANDATORY: Use __app_id and __firebase_config provided by the environment
+      const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+      const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {};
+
+      if (!firebaseApp) {
+        const app = initializeApp(firebaseConfig);
+        setFirebaseApp(app);
+        const firestore = getFirestore(app);
+        setDb(firestore);
+        const firebaseAuth = getAuth(app);
+        setAuth(firebaseAuth);
+
+        // Listen for authentication state changes
+        const unsubscribe = onAuthStateChanged(firebaseAuth, async (user) => {
+          if (user) {
+            setUserId(user.uid);
+            console.log('User authenticated:', user.uid);
+          } else {
+            // Sign in anonymously if no initial token or user logs out
+            console.log('No user, attempting anonymous sign-in...');
+            try {
+              await signInAnonymously(firebaseAuth);
+              console.log('Signed in anonymously.');
+            } catch (anonError) {
+              console.error('Error signing in anonymously:', anonError);
+              setError(`Authentication Error: ${anonError.message}`);
+            }
+          }
+          setIsAuthReady(true); // Mark auth as ready after initial check
+        });
+
+        // MANDATORY: Use __initial_auth_token for custom authentication
+        if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+          signInWithCustomToken(firebaseAuth, __initial_auth_token)
+            .then(() => console.log('Signed in with custom token.'))
+            .catch((tokenError) => {
+              console.error('Error signing in with custom token:', tokenError);
+              setError(`Authentication Error: ${tokenError.message}`);
+              // Fallback to anonymous if custom token fails
+              signInAnonymously(firebaseAuth)
+                .then(() => console.log('Signed in anonymously after token failure.'))
+                .catch((anonError) => {
+                  console.error('Error signing in anonymously as fallback:', anonError);
+                  setError(`Authentication Error: ${anonError.message}`);
+                });
+            });
+        }
+
+        return () => unsubscribe(); // Cleanup auth listener on unmount
+      }
+    } catch (err) {
+      console.error('Firebase initialization error:', err);
+      setError(`Firebase Initialization Failed: ${err.message}`);
+    }
+  }, []); // Run only once on component mount
+
+  if (error) {
+    return (
+      <div className="flex items-center justify-center min-h-screen bg-red-100 text-red-800 p-4 rounded-lg">
+        <p className="text-lg font-semibold">Error: {error}</p>
+      </div>
+    );
+  }
+
+  if (!isAuthReady || !db || !auth) {
+    return (
+      <div className="flex items-center justify-center min-h-screen bg-gray-100 text-gray-700">
+        <p className="text-lg">Initializing Firebase...</p>
+      </div>
+    );
+  }
+
+  // Display the user ID
+  return (
+    <div className="min-h-screen bg-gray-50 p-6 font-sans antialiased text-gray-800">
+      <h1 className="text-4xl font-extrabold text-center text-blue-700 mb-8 rounded-lg shadow-md p-4 bg-white">
+        Customer Care Registry - Database Demo
+      </h1>
+      <div className="bg-blue-100 border-l-4 border-blue-500 text-blue-700 p-4 mb-8 rounded-lg shadow-sm">
+        <p className="font-semibold">Current User ID: <span className="font-mono text-sm break-all">{userId || 'N/A (Authenticating...)'}</span></p>
+        <p className="text-sm mt-2">This ID is used to structure private data and authenticate public data writes.</p>
+      </div>
+
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
+        <UserManagement db={db} userId={userId} appId={typeof __app_id !== 'undefined' ? __app_id : 'default-app-id'} />
+        <ComplaintManagement db={db} userId={userId} appId={typeof __app_id !== 'undefined' ? __app_id : 'default-app-id'} />
+        <AssignedComplaintManagement db={db} userId={userId} appId={typeof __app_id !== 'undefined' ? __app_id : 'default-app-id'} />
+        <ChatManagement db={db} userId={userId} appId={typeof __app_id !== 'undefined' ? __app_id : 'default-app-id'} />
+      </div>
+    </div>
+  );
+}
+
+// Reusable Card Component for better UI organization
+const DataCard = ({ title, children }) => (
+  <div className="bg-white p-6 rounded-xl shadow-lg border border-gray-200">
+    <h2 className="text-2xl font-bold text-gray-800 mb-6 text-center">{title}</h2>
+    {children}
+  </div>
+);
+
+// User Management Component
+const UserManagement = ({ db, userId, appId }) => {
+  const [users, setUsers] = useState([]);
+  const [name, setName] = useState('');
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [phone, setPhone] = useState('');
+  const [userType, setUserType] = useState('customer'); // Default user type
+  const [loading, setLoading] = useState(false);
+  const [message, setMessage] = useState('');
+
+  // Firestore Collection Path for User Schema (Private Data)
+  const usersCollectionRef = collection(db, `artifacts/${appId}/users/${userId}/user_Schema`);
+
+  // Fetch users on component mount and listen for real-time updates
+  useEffect(() => {
+    if (!db || !userId) return;
+
+    setLoading(true);
+    const q = query(usersCollectionRef); // No orderBy to avoid index issues
+    const unsubscribe = onSnapshot(q, (snapshot) => {
+      const usersData = snapshot.docs.map((doc) => ({
+        id: doc.id,
+        ...doc.data(),
+      }));
+      setUsers(usersData);
+      setLoading(false);
+    }, (error) => {
+      console.error("Error fetching users:", error);
+      setMessage(`Error fetching users: ${error.message}`);
+      setLoading(false);
+    });
+
+    return () => unsubscribe(); // Cleanup listener
+  }, [db, userId, appId]); // Re-run if db or userId changes
+
+  // Add a new user
+  const handleAddUser = async (e) => {
+    e.preventDefault();
+    if (!name || !email || !password || !phone) {
+      setMessage('Please fill all user fields.');
+      return;
+    }
+    setLoading(true);
+    setMessage('');
+    try {
+      await addDoc(usersCollectionRef, {
+        name,
+        email,
+        password, // In a real app, hash passwords!
+        phone,
+        userType,
+        createdAt: serverTimestamp(),
+      });
+      setMessage('User added successfully!');
+      setName('');
+      setEmail('');
+      setPassword('');
+      setPhone('');
+      setUserType('customer');
+    } catch (err) {
+      console.error('Error adding user:', err);
+      setMessage(`Error adding user: ${err.message}`);
+    } finally {
+      setLoading(false);
+      setTimeout(() => setMessage(''), 3000); // Clear message
+    }
+  };
+
+  // Delete a user
+  const handleDeleteUser = async (id) => {
+    setLoading(true);
+    setMessage('');
+    try {
+      await deleteDoc(doc(db, `artifacts/${appId}/users/${userId}/user_Schema`, id));
+      setMessage('User deleted successfully!');
+    } catch (err) {
+      console.error('Error deleting user:', err);
+      setMessage(`Error deleting user: ${err.message}`);
+    } finally {
+      setLoading(false);
+      setTimeout(() => setMessage(''), 3000); // Clear message
+    }
+  };
+
+  return (
+    <DataCard title="User Management (user_Schema)">
+      <form onSubmit={handleAddUser} className="mb-6 space-y-3">
+        <input
+          type="text"
+          placeholder="Name"
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+          className="w-full px-4 py-2 border rounded-md focus:ring-blue-500 focus:border-blue-500"
+          required
+        />
+        <input
+          type="email"
+          placeholder="Email"
+          value={email}
+          onChange={(e) => setEmail(e.target.value)}
+          className="w-full px-4 py-2 border rounded-md focus:ring-blue-500 focus:border-blue-500"
+          required
+        />
+        <input
+          type="password"
+          placeholder="Password (hash in real app)"
+          value={password}
+          onChange={(e) => setPassword(e.target.value)}
+          className="w-full px-4 py-2 border rounded-md focus:ring-blue-500 focus:border-blue-500"
+          required
+        />
+        <input
+          type="tel"
+          placeholder="Phone"
+          value={phone}
+          onChange={(e) => setPhone(e.target.value)}
+          className="w-full px-4 py-2 border rounded-md focus:ring-blue-500 focus:border-blue-500"
+          required
+        />
+        <select
+          value={userType}
+          onChange={(e) => setUserType(e.target.value)}
+          className="w-full px-4 py-2 border rounded-md focus:ring-blue-500 focus:border-blue-500"
+        >
+          <option value="customer">Customer</option>
+          <option value="agent">Agent</option>
+          <option value="admin">Admin</option>
+        </select>
+        <button
+          type="submit"
+          className="w-full bg-blue-600 text-white py-2 rounded-md hover:bg-blue-700 transition duration-150 ease-in-out disabled:opacity-50"
+          disabled={loading}
+        >
+          {loading ? 'Adding...' : 'Add User'}
+        </button>
+      </form>
+
+      {message && <p className="text-sm text-center mb-4">{message}</p>}
+
+      {loading && users.length === 0 ? (
+        <p className="text-center text-gray-500">Loading users...</p>
+      ) : users.length === 0 ? (
+        <p className="text-center text-gray-500">No users added yet.</p>
+      ) : (
+        <div className="max-h-60 overflow-y-auto border rounded-md">
+          <ul className="divide-y divide-gray-200">
+            {users.map((user) => (
+              <li key={user.id} className="p-3 flex justify-between items-center hover:bg-gray-50">
+                <div>
+                  <p className="font-semibold">{user.name} ({user.userType})</p>
+                  <p className="text-sm text-gray-600">{user.email}, {user.phone}</p>
+                </div>
+                <button
+                  onClick={() => handleDeleteUser(user.id)}
+                  className="bg-red-500 text-white px-3 py-1 rounded-md text-sm hover:bg-red-600 transition duration-150 ease-in-out"
+                  disabled={loading}
+                >
+                  Delete
+                </button>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+    </DataCard>
+  );
+};
+
+// Complaint Management Component
+const ComplaintManagement = ({ db, userId, appId }) => {
+  const [complaints, setComplaints] = useState([]);
+  const [name, setName] = useState('');
+  const [address, setAddress] = useState('');
+  const [city, setCity] = useState('');
+  const [state, setState] = useState('');
+  const [pincode, setPincode] = useState('');
+  const [comment, setComment] = useState('');
+  const [status, setStatus] = useState('Pending'); // Default status
+  const [loading, setLoading] = useState(false);
+  const [message, setMessage] = useState('');
+
+  // Firestore Collection Path for Complaint Schema (Public Data - visible to agents/admins)
+  // Note: For public data, the userId in the path should ideally be removed if it's truly public
+  // and not tied to the *current* authenticated user's private space.
+  // However, following the security rules provided:
+  // Public data: /artifacts/{appId}/public/data/{your_collection_name}
+  const complaintsCollectionRef = collection(db, `artifacts/${appId}/public/data/complaint_schema`);
+
+  // Fetch complaints on component mount and listen for real-time updates
+  useEffect(() => {
+    if (!db || !userId) return; // userId is still needed for auth, but not directly in this public path
+
+    setLoading(true);
+    const q = query(complaintsCollectionRef);
+    const unsubscribe = onSnapshot(q, (snapshot) => {
+      const complaintsData = snapshot.docs.map((doc) => ({
+        id: doc.id,
+        ...doc.data(),
+      }));
+      setComplaints(complaintsData);
+      setLoading(false);
+    }, (error) => {
+      console.error("Error fetching complaints:", error);
+      setMessage(`Error fetching complaints: ${error.message}`);
+      setLoading(false);
+    });
+
+    return () => unsubscribe();
+  }, [db, userId, appId]);
+
+  // Add a new complaint
+  const handleAddComplaint = async (e) => {
+    e.preventDefault();
+    if (!name || !address || !city || !state || !pincode || !comment) {
+      setMessage('Please fill all complaint fields.');
+      return;
+    }
+    setLoading(true);
+    setMessage('');
+    try {
+      await addDoc(complaintsCollectionRef, {
+        userId, // Associate with the current user who made it
+        name,
+        address,
+        city,
+        state,
+        pincode,
+        comment,
+        status,
+        createdAt: serverTimestamp(),
+      });
+      setMessage('Complaint added successfully!');
+      setName('');
+      setAddress('');
+      setCity('');
+      setState('');
+      setPincode('');
+      setComment('');
+      setStatus('Pending');
+    } catch (err) {
+      console.error('Error adding complaint:', err);
+      setMessage(`Error adding complaint: ${err.message}`);
+    } finally {
+      setLoading(false);
+      setTimeout(() => setMessage(''), 3000);
+    }
+  };
+
+  // Delete a complaint
+  const handleDeleteComplaint = async (id) => {
+    setLoading(true);
+    setMessage('');
+    try {
+      await deleteDoc(doc(db, `artifacts/${appId}/public/data/complaint_schema`, id));
+      setMessage('Complaint deleted successfully!');
+    } catch (err) {
+      console.error('Error deleting complaint:', err);
+      setMessage(`Error deleting complaint: ${err.message}`);
+    } finally {
+      setLoading(false);
+      setTimeout(() => setMessage(''), 3000);
+    }
+  };
+
+  // Update complaint status
+  const handleUpdateComplaintStatus = async (id, newStatus) => {
+    setLoading(true);
+    setMessage('');
+    try {
+      await updateDoc(doc(db, `artifacts/${appId}/public/data/complaint_schema`, id), {
+        status: newStatus,
+        updatedAt: serverTimestamp(),
+      });
+      setMessage('Complaint status updated!');
+    } catch (err) {
+      console.error('Error updating complaint status:', err);
+      setMessage(`Error updating complaint status: ${err.message}`);
+    } finally {
+      setLoading(false);
+      setTimeout(() => setMessage(''), 3000);
+    }
+  };
+
+
+  return (
+    <DataCard title="Complaint Management (complaint_schema)">
+      <form onSubmit={handleAddComplaint} className="mb-6 space-y-3">
+        <input type="text" placeholder="Name" value={name} onChange={(e) => setName(e.target.value)} className="w-full px-4 py-2 border rounded-md" required />
+        <input type="text" placeholder="Address" value={address} onChange={(e) => setAddress(e.target.value)} className="w-full px-4 py-2 border rounded-md" required />
+        <input type="text" placeholder="City" value={city} onChange={(e) => setCity(e.target.value)} className="w-full px-4 py-2 border rounded-md" required />
+        <input type="text" placeholder="State" value={state} onChange={(e) => setState(e.target.value)} className="w-full px-4 py-2 border rounded-md" required />
+        <input type="text" placeholder="Pincode" value={pincode} onChange={(e) => setPincode(e.target.value)} className="w-full px-4 py-2 border rounded-md" required />
+        <textarea placeholder="Comment" value={comment} onChange={(e) => setComment(e.target.value)} rows="3" className="w-full px-4 py-2 border rounded-md resize-y" required></textarea>
+        <select value={status} onChange={(e) => setStatus(e.target.value)} className="w-full px-4 py-2 border rounded-md">
+          <option value="Pending">Pending</option>
+          <option value="In Progress">In Progress</option>
+          <option value="Resolved">Resolved</option>
+        </select>
+        <button
+          type="submit"
+          className="w-full bg-blue-600 text-white py-2 rounded-md hover:bg-blue-700 transition duration-150 ease-in-out disabled:opacity-50"
+          disabled={loading}
+        >
+          {loading ? 'Adding...' : 'Add Complaint'}
+        </button>
+      </form>
+
+      {message && <p className="text-sm text-center mb-4">{message}</p>}
+
+      {loading && complaints.length === 0 ? (
+        <p className="text-center text-gray-500">Loading complaints...</p>
+      ) : complaints.length === 0 ? (
+        <p className="text-center text-gray-500">No complaints added yet.</p>
+      ) : (
+        <div className="max-h-60 overflow-y-auto border rounded-md">
+          <ul className="divide-y divide-gray-200">
+            {complaints.map((complaint) => (
+              <li key={complaint.id} className="p-3 hover:bg-gray-50">
+                <div className="flex justify-between items-center mb-1">
+                  <p className="font-semibold text-blue-700">{complaint.name} <span className="text-sm text-gray-500 font-normal">(ID: {complaint.id.substring(0, 5)}...)</span></p>
+                  <span className={`px-2 py-0.5 text-xs rounded-full ${
+                    complaint.status === 'Resolved' ? 'bg-green-100 text-green-800' :
+                    complaint.status === 'In Progress' ? 'bg-yellow-100 text-yellow-800' :
+                    'bg-gray-100 text-gray-800'
+                  }`}>
+                    {complaint.status}
+                  </span>
+                </div>
+                <p className="text-sm text-gray-700 italic">"{complaint.comment}"</p>
+                <p className="text-xs text-gray-500 mt-1">{complaint.address}, {complaint.city}, {complaint.state} - {complaint.pincode}</p>
+                <div className="mt-2 flex justify-end space-x-2">
+                  <button
+                    onClick={() => handleUpdateComplaintStatus(complaint.id, 'Resolved')}
+                    className="bg-green-500 text-white px-2 py-1 rounded-md text-xs hover:bg-green-600"
+                    disabled={loading}
+                  >
+                    Mark Resolved
+                  </button>
+                  <button
+                    onClick={() => handleUpdateComplaintStatus(complaint.id, 'In Progress')}
+                    className="bg-yellow-500 text-white px-2 py-1 rounded-md text-xs hover:bg-yellow-600"
+                    disabled={loading}
+                  >
+                    Mark In Progress
+                  </button>
+                  <button
+                    onClick={() => handleDeleteComplaint(complaint.id)}
+                    className="bg-red-500 text-white px-2 py-1 rounded-md text-xs hover:bg-red-600"
+                    disabled={loading}
+                  >
+                    Delete
+                  </button>
+                </div>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+    </DataCard>
+  );
+};
+
+// Assigned Complaint Management Component
+const AssignedComplaintManagement = ({ db, userId, appId }) => {
+  const [assignedComplaints, setAssignedComplaints] = useState([]);
+  const [agentId, setAgentId] = useState('');
+  const [complaintId, setComplaintId] = useState('');
+  const [status, setStatus] = useState('Assigned'); // Default status
+  const [agentName, setAgentName] = useState('');
+  const [loading, setLoading] = useState(false);
+  const [message, setMessage] = useState('');
+
+  // Firestore Collection Path for Assigned Complaint Schema (Public Data)
+  const assignedCollectionRef = collection(db, `artifacts/${appId}/public/data/assigned_complaint`);
+
+  // Fetch assigned complaints on component mount and listen for real-time updates
+  useEffect(() => {
+    if (!db || !userId) return;
+
+    setLoading(true);
+    const q = query(assignedCollectionRef);
+    const unsubscribe = onSnapshot(q, (snapshot) => {
+      const data = snapshot.docs.map((doc) => ({
+        id: doc.id,
+        ...doc.data(),
+      }));
+      setAssignedComplaints(data);
+      setLoading(false);
+    }, (error) => {
+      console.error("Error fetching assigned complaints:", error);
+      setMessage(`Error fetching assigned complaints: ${error.message}`);
+      setLoading(false);
+    });
+
+    return () => unsubscribe();
+  }, [db, userId, appId]);
+
+  // Add a new assigned complaint
+  const handleAddAssignedComplaint = async (e) => {
+    e.preventDefault();
+    if (!agentId || !complaintId || !agentName) {
+      setMessage('Please fill all assigned complaint fields.');
+      return;
+    }
+    setLoading(true);
+    setMessage('');
+    try {
+      await addDoc(assignedCollectionRef, {
+        agentId,
+        complaintId,
+        status,
+        agentName,
+        assignedAt: serverTimestamp(),
+      });
+      setMessage('Assigned complaint added successfully!');
+      setAgentId('');
+      setComplaintId('');
+      setStatus('Assigned');
+      setAgentName('');
+    } catch (err) {
+      console.error('Error adding assigned complaint:', err);
+      setMessage(`Error adding assigned complaint: ${err.message}`);
+    } finally {
+      setLoading(false);
+      setTimeout(() => setMessage(''), 3000);
+    }
+  };
+
+  // Delete an assigned complaint
+  const handleDeleteAssignedComplaint = async (id) => {
+    setLoading(true);
+    setMessage('');
+    try {
+      await deleteDoc(doc(db, `artifacts/${appId}/public/data/assigned_complaint`, id));
+      setMessage('Assigned complaint deleted successfully!');
+    } catch (err) {
+      console.error('Error deleting assigned complaint:', err);
+      setMessage(`Error deleting assigned complaint: ${err.message}`);
+    } finally {
+      setLoading(false);
+      setTimeout(() => setMessage(''), 3000);
+    }
+  };
+
+  return (
+    <DataCard title="Assigned Complaint Management (assigned_complaint)">
+      <form onSubmit={handleAddAssignedComplaint} className="mb-6 space-y-3">
+        <input type="text" placeholder="Agent ID" value={agentId} onChange={(e) => setAgentId(e.target.value)} className="w-full px-4 py-2 border rounded-md" required />
+        <input type="text" placeholder="Agent Name" value={agentName} onChange={(e) => setAgentName(e.target.value)} className="w-full px-4 py-2 border rounded-md" required />
+        <input type="text" placeholder="Complaint ID" value={complaintId} onChange={(e) => setComplaintId(e.target.value)} className="w-full px-4 py-2 border rounded-md" required />
+        <select value={status} onChange={(e) => setStatus(e.target.value)} className="w-full px-4 py-2 border rounded-md">
+          <option value="Assigned">Assigned</option>
+          <option value="InProgress">In Progress</option>
+          <option value="Resolved">Resolved</option>
+          <option value="Closed">Closed</option>
+        </select>
+        <button
+          type="submit"
+          className="w-full bg-blue-600 text-white py-2 rounded-md hover:bg-blue-700 transition duration-150 ease-in-out disabled:opacity-50"
+          disabled={loading}
+        >
+          {loading ? 'Assigning...' : 'Assign Complaint'}
+        </button>
+      </form>
+
+      {message && <p className="text-sm text-center mb-4">{message}</p>}
+
+      {loading && assignedComplaints.length === 0 ? (
+        <p className="text-center text-gray-500">Loading assigned complaints...</p>
+      ) : assignedComplaints.length === 0 ? (
+        <p className="text-center text-gray-500">No assigned complaints yet.</p>
+      ) : (
+        <div className="max-h-60 overflow-y-auto border rounded-md">
+          <ul className="divide-y divide-gray-200">
+            {assignedComplaints.map((assigned) => (
+              <li key={assigned.id} className="p-3 hover:bg-gray-50">
+                <p className="font-semibold">Complaint ID: {assigned.complaintId} <span className="text-sm text-gray-500 font-normal">(Assigned to {assigned.agentName})</span></p>
+                <p className="text-sm text-gray-700">Agent ID: {assigned.agentId}</p>
+                <p className="text-sm">Status: <span className={`font-medium ${
+                  assigned.status === 'Resolved' ? 'text-green-600' :
+                  assigned.status === 'InProgress' ? 'text-yellow-600' :
+                  'text-gray-600'
+                }`}>{assigned.status}</span></p>
+                <div className="mt-2 text-right">
+                  <button
+                    onClick={() => handleDeleteAssignedComplaint(assigned.id)}
+                    className="bg-red-500 text-white px-2 py-1 rounded-md text-xs hover:bg-red-600"
+                    disabled={loading}
+                  >
+                    Delete
+                  </button>
+                </div>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+    </DataCard>
+  );
+};
+
+// Chat Window Management Component
+const ChatManagement = ({ db, userId, appId }) => {
+  const [messages, setMessages] = useState([]);
+  const [complaintId, setComplaintId] = useState('');
+  const [name, setName] = useState(''); // Sender's name
+  const [messageText, setMessageText] = useState('');
+  const [loading, setLoading] = useState(false);
+  const [feedback, setFeedback] = useState(''); // Message for feedback
+
+  // Firestore Collection Path for Message Schema (Private Data, associated with current user's chat history)
+  // Or, if chat is per-complaint for all participants, it might be public/data/message
+  // Following the schema's "Messages are associated with a complaint through the complaintId field"
+  // it implies it's public per complaint. Let's place it in public.
+  const messagesCollectionRef = collection(db, `artifacts/${appId}/public/data/message`);
+
+  // Fetch messages based on selected complaintId and listen for real-time updates
+  useEffect(() => {
+    if (!db || !complaintId || !userId) {
+      setMessages([]); // Clear messages if no complaintId or not authenticated
+      return;
+    }
+
+    setLoading(true);
+    // Query for messages specific to the selected complaintId
+    const q = query(messagesCollectionRef, where('complaintId', '==', complaintId));
+    const unsubscribe = onSnapshot(q, (snapshot) => {
+      const messagesData = snapshot.docs.map((doc) => ({
+        id: doc.id,
+        ...doc.data(),
+      })).sort((a, b) => a.timestamp?.toMillis() - b.timestamp?.toMillis()); // Sort by timestamp
+      setMessages(messagesData);
+      setLoading(false);
+    }, (error) => {
+      console.error("Error fetching messages:", error);
+      setFeedback(`Error fetching messages: ${error.message}`);
+      setLoading(false);
+    });
+
+    return () => unsubscribe();
+  }, [db, complaintId, userId, appId]); // Re-run when complaintId changes
+
+  // Send a new message
+  const handleSendMessage = async (e) => {
+    e.preventDefault();
+    if (!complaintId || !name || !messageText.trim()) {
+      setFeedback('Please select a Complaint ID, enter your name, and type a message.');
+      return;
+    }
+    setLoading(true);
+    setFeedback('');
+    try {
+      await addDoc(messagesCollectionRef, {
+        complaintId,
+        name, // Sender's name
+        message: messageText,
+        timestamp: serverTimestamp(),
+        userId: userId, // Store which user sent the message
+      });
+      setMessageText('');
+      setFeedback('Message sent!');
+    } catch (err) {
+      console.error('Error sending message:', err);
+      setFeedback(`Error sending message: ${err.message}`);
+    } finally {
+      setLoading(false);
+      setTimeout(() => setFeedback(''), 3000);
+    }
+  };
+
+  return (
+    <DataCard title="Chat Window (message)">
+      <form onSubmit={handleSendMessage} className="mb-6 space-y-3">
+        <input
+          type="text"
+          placeholder="Complaint ID for Chat"
+          value={complaintId}
+          onChange={(e) => setComplaintId(e.target.value)}
+          className="w-full px-4 py-2 border rounded-md focus:ring-blue-500 focus:border-blue-500"
+          required
+        />
+        <input
+          type="text"
+          placeholder="Your Name (e.g., John Doe, Agent Smith)"
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+          className="w-full px-4 py-2 border rounded-md focus:ring-blue-500 focus:border-blue-500"
+          required
+        />
+        <textarea
+          placeholder="Type your message..."
+          value={messageText}
+          onChange={(e) => setMessageText(e.target.value)}
+          rows="3"
+          className="w-full px-4 py-2 border rounded-md resize-y focus:ring-blue-500 focus:border-blue-500"
+          required
+        ></textarea>
+        <button
+          type="submit"
+          className="w-full bg-blue-600 text-white py-2 rounded-md hover:bg-blue-700 transition duration-150 ease-in-out disabled:opacity-50"
+          disabled={loading || !complaintId || !name || !messageText.trim()}
+        >
+          {loading ? 'Sending...' : 'Send Message'}
+        </button>
+      </form>
+
+      {feedback && <p className="text-sm text-center mb-4">{feedback}</p>}
+
+      {loading && messages.length === 0 && complaintId ? (
+        <p className="text-center text-gray-500">Loading messages...</p>
+      ) : messages.length === 0 && complaintId ? (
+        <p className="text-center text-gray-500">No messages for this complaint yet.</p>
+      ) : messages.length === 0 && !complaintId ? (
+        <p className="text-center text-gray-500">Enter a Complaint ID to view chat history.</p>
+      ) : (
+        <div className="max-h-60 overflow-y-auto border rounded-md p-2 bg-gray-50">
+          {messages.map((msg) => (
+            <div
+              key={msg.id}
+              className={`mb-2 p-2 rounded-lg max-w-[80%] ${
+                msg.userId === userId ? 'bg-blue-100 ml-auto' : 'bg-gray-200 mr-auto'
+              }`}
+            >
+              <p className="font-semibold text-sm text-blue-800">{msg.name}</p>
+              <p className="text-gray-800 break-words">{msg.message}</p>
+              <p className="text-xs text-gray-500 text-right mt-1">
+                {msg.timestamp ? new Date(msg.timestamp.toDate()).toLocaleString() : 'Just now'}
+              </p>
+            </div>
+          ))}
+        </div>
+      )}
+    </DataCard>
+  );
+};
