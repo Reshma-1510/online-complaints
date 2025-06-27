@@ -1,0 +1,10 @@
+exports.getAllComplaints = async (req, res) => {
+  const { status, user } = req.query;
+  const filter = {};
+
+  if (status) filter.status = status;
+  if (user) filter.user = user;
+
+  const complaints = await Complaint.find(filter);
+  res.json(complaints);
+};
