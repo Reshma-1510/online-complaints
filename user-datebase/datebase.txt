@@ -22,7 +22,7 @@ import {
   serverTimestamp,
 } from 'firebase/firestore';
 
-// Main App Component
+
 export default function App() {
   const [firebaseApp, setFirebaseApp] = useState(null);
   const [db, setDb] = useState(null);
@@ -31,7 +31,7 @@ export default function App() {
   const [isAuthReady, setIsAuthReady] = useState(false);
   const [error, setError] = useState(null);
 
-  // Initialize Firebase and set up authentication listener
+ 
   useEffect(() => {
     try {
       // MANDATORY: Use __app_id and __firebase_config provided by the environment
@@ -46,13 +46,13 @@ export default function App() {
         const firebaseAuth = getAuth(app);
         setAuth(firebaseAuth);
 
-        // Listen for authentication state changes
+      
         const unsubscribe = onAuthStateChanged(firebaseAuth, async (user) => {
           if (user) {
             setUserId(user.uid);
             console.log('User authenticated:', user.uid);
           } else {
-            // Sign in anonymously if no initial token or user logs out
+           
             console.log('No user, attempting anonymous sign-in...');
             try {
               await signInAnonymously(firebaseAuth);
@@ -62,7 +62,7 @@ export default function App() {
               setError(`Authentication Error: ${anonError.message}`);
             }
           }
-          setIsAuthReady(true); // Mark auth as ready after initial check
+          setIsAuthReady(true); 
         });
 
         // MANDATORY: Use __initial_auth_token for custom authentication
@@ -72,7 +72,7 @@ export default function App() {
             .catch((tokenError) => {
               console.error('Error signing in with custom token:', tokenError);
               setError(`Authentication Error: ${tokenError.message}`);
-              // Fallback to anonymous if custom token fails
+             
               signInAnonymously(firebaseAuth)
                 .then(() => console.log('Signed in anonymously after token failure.'))
                 .catch((anonError) => {
@@ -82,13 +82,13 @@ export default function App() {
             });
         }
 
-        return () => unsubscribe(); // Cleanup auth listener on unmount
+        return () => unsubscribe(); 
       }
     } catch (err) {
       console.error('Firebase initialization error:', err);
       setError(`Firebase Initialization Failed: ${err.message}`);
     }
-  }, []); // Run only once on component mount
+  }, []); 
 
   if (error) {
     return (
@@ -106,7 +106,7 @@ export default function App() {
     );
   }
 
-  // Display the user ID
+
   return (
     <div className="min-h-screen bg-gray-50 p-6 font-sans antialiased text-gray-800">
       <h1 className="text-4xl font-extrabold text-center text-blue-700 mb-8 rounded-lg shadow-md p-4 bg-white">
@@ -135,7 +135,7 @@ const DataCard = ({ title, children }) => (
   </div>
 );
 
-// User Management Component
+
 const UserManagement = ({ db, userId, appId }) => {
   const [users, setUsers] = useState([]);
   const [name, setName] = useState('');
@@ -146,10 +146,10 @@ const UserManagement = ({ db, userId, appId }) => {
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState('');
 
-  // Firestore Collection Path for User Schema (Private Data)
+
   const usersCollectionRef = collection(db, `artifacts/${appId}/users/${userId}/user_Schema`);
 
-  // Fetch users on component mount and listen for real-time updates
+
   useEffect(() => {
     if (!db || !userId) return;
 
@@ -171,7 +171,7 @@ const UserManagement = ({ db, userId, appId }) => {
     return () => unsubscribe(); // Cleanup listener
   }, [db, userId, appId]); // Re-run if db or userId changes
 
-  // Add a new user
+
   const handleAddUser = async (e) => {
     e.preventDefault();
     if (!name || !email || !password || !phone) {
@@ -200,11 +200,11 @@ const UserManagement = ({ db, userId, appId }) => {
       setMessage(`Error adding user: ${err.message}`);
     } finally {
       setLoading(false);
-      setTimeout(() => setMessage(''), 3000); // Clear message
+      setTimeout(() => setMessage(''), 3000); 
     }
   };
 
-  // Delete a user
+
   const handleDeleteUser = async (id) => {
     setLoading(true);
     setMessage('');
@@ -304,7 +304,7 @@ const UserManagement = ({ db, userId, appId }) => {
   );
 };
 
-// Complaint Management Component
+
 const ComplaintManagement = ({ db, userId, appId }) => {
   const [complaints, setComplaints] = useState([]);
   const [name, setName] = useState('');
@@ -317,14 +317,9 @@ const ComplaintManagement = ({ db, userId, appId }) => {
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState('');
 
-  // Firestore Collection Path for Complaint Schema (Public Data - visible to agents/admins)
-  // Note: For public data, the userId in the path should ideally be removed if it's truly public
-  // and not tied to the *current* authenticated user's private space.
-  // However, following the security rules provided:
-  // Public data: /artifacts/{appId}/public/data/{your_collection_name}
+  
   const complaintsCollectionRef = collection(db, `artifacts/${appId}/public/data/complaint_schema`);
 
-  // Fetch complaints on component mount and listen for real-time updates
   useEffect(() => {
     if (!db || !userId) return; // userId is still needed for auth, but not directly in this public path
 
@@ -346,7 +341,7 @@ const ComplaintManagement = ({ db, userId, appId }) => {
     return () => unsubscribe();
   }, [db, userId, appId]);
 
-  // Add a new complaint
+
   const handleAddComplaint = async (e) => {
     e.preventDefault();
     if (!name || !address || !city || !state || !pincode || !comment) {
@@ -384,7 +379,7 @@ const ComplaintManagement = ({ db, userId, appId }) => {
     }
   };
 
-  // Delete a complaint
+
   const handleDeleteComplaint = async (id) => {
     setLoading(true);
     setMessage('');
@@ -400,7 +395,7 @@ const ComplaintManagement = ({ db, userId, appId }) => {
     }
   };
 
-  // Update complaint status
+
   const handleUpdateComplaintStatus = async (id, newStatus) => {
     setLoading(true);
     setMessage('');
@@ -498,7 +493,7 @@ const ComplaintManagement = ({ db, userId, appId }) => {
   );
 };
 
-// Assigned Complaint Management Component
+
 const AssignedComplaintManagement = ({ db, userId, appId }) => {
   const [assignedComplaints, setAssignedComplaints] = useState([]);
   const [agentId, setAgentId] = useState('');
@@ -508,10 +503,10 @@ const AssignedComplaintManagement = ({ db, userId, appId }) => {
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState('');
 
-  // Firestore Collection Path for Assigned Complaint Schema (Public Data)
+ 
   const assignedCollectionRef = collection(db, `artifacts/${appId}/public/data/assigned_complaint`);
 
-  // Fetch assigned complaints on component mount and listen for real-time updates
+
   useEffect(() => {
     if (!db || !userId) return;
 
@@ -533,7 +528,7 @@ const AssignedComplaintManagement = ({ db, userId, appId }) => {
     return () => unsubscribe();
   }, [db, userId, appId]);
 
-  // Add a new assigned complaint
+  
   const handleAddAssignedComplaint = async (e) => {
     e.preventDefault();
     if (!agentId || !complaintId || !agentName) {
@@ -564,7 +559,6 @@ const AssignedComplaintManagement = ({ db, userId, appId }) => {
     }
   };
 
-  // Delete an assigned complaint
   const handleDeleteAssignedComplaint = async (id) => {
     setLoading(true);
     setMessage('');
@@ -637,7 +631,6 @@ const AssignedComplaintManagement = ({ db, userId, appId }) => {
   );
 };
 
-// Chat Window Management Component
 const ChatManagement = ({ db, userId, appId }) => {
   const [messages, setMessages] = useState([]);
   const [complaintId, setComplaintId] = useState('');
